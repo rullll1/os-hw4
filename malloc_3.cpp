@@ -8,7 +8,7 @@
 #define MAX_ORDER 10
 
 struct MallocMetadata {
-    bool is_free =true;
+    bool is_free = true;
     size_t mmap_alloc_size = 0;
     int order = 0;
     MallocMetadata *next = nullptr;
@@ -17,7 +17,6 @@ struct MallocMetadata {
     MallocMetadata *prev_in_order = nullptr;
 };
 
-static int random_cookie = rand();
 bool orderBlocksInit = false;
 size_t num_of_free_bytes = 0;
 size_t num_of_free_blocks = 0;
@@ -25,50 +24,44 @@ size_t num_of_alloc_blocks = 0;
 size_t num_of_alloc_bytes = 0;
 
 MallocMetadata *orderBlocks[11] = {nullptr};
-
 MallocMetadata *_memoryBlocks = nullptr;
 
-
-void orderListInsert(MallocMetadata *meta) {
-    MallocMetadata *head = orderBlocks[meta->order];
+void orderListInsert(MallocMetadata *metadata) {
+    auto &head = orderBlocks[metadata->order];
     if (head == nullptr) {
-        meta->next_in_order = nullptr;
-        meta->prev_in_order = nullptr;
-        orderBlocks[meta->order] = meta;
+        metadata->next_in_order = nullptr;
+        metadata->prev_in_order = nullptr;
+        head = metadata;
         return;
     }
 
-    MallocMetadata *iter_curr = head;
-    while (iter_curr != nullptr) {
-        if ((void *) iter_curr > (void *) meta) {
-            meta->next_in_order = iter_curr;
-            meta->prev_in_order = iter_curr->prev_in_order;
-            iter_curr->prev_in_order = meta;
-            if (meta->prev_in_order == nullptr) {
-                orderBlocks[meta->order] = meta;
-            }
-            else {
-                meta->prev_in_order->next_in_order = meta;
+    for (MallocMetadata *iter_curr = head; iter_curr != nullptr; iter_curr = iter_curr->next_in_order) {
+        if (iter_curr > metadata) {
+            metadata->next_in_order = iter_curr;
+            metadata->prev_in_order = iter_curr->prev_in_order;
+            iter_curr->prev_in_order = metadata;
+            if (metadata->prev_in_order == nullptr) {
+                head = metadata;
+            } else {
+                metadata->prev_in_order->next_in_order = metadata;
             }
             return;
         }
-        else if (iter_curr->next_in_order == nullptr) {
-            iter_curr->next_in_order = meta;
-            meta->prev_in_order = iter_curr;
-            meta->next_in_order = nullptr;
+        if (iter_curr->next_in_order == nullptr) {
+            iter_curr->next_in_order = metadata;
+            metadata->prev_in_order = iter_curr;
+            metadata->next_in_order = nullptr;
             return;
         }
-        iter_curr = iter_curr->next_in_order;
     }
 }
 
-void orderListRemove(MallocMetadata *meta) {
-    MallocMetadata *head = orderBlocks[meta->order];
-    MallocMetadata *iter = head;
-    while (iter != nullptr) {
-        if (iter == meta) {
+void orderListRemove(MallocMetadata *metadata) {
+    auto &head = orderBlocks[metadata->order];
+    for (MallocMetadata *iter = head; iter != nullptr; iter = iter->next_in_order) {
+        if (iter == metadata) {
             if (iter->prev_in_order == nullptr) {
-                orderBlocks[meta->order] = iter->next_in_order;
+                head = iter->next_in_order;
             } else {
                 iter->prev_in_order->next_in_order = iter->next_in_order;
             }
@@ -77,70 +70,69 @@ void orderListRemove(MallocMetadata *meta) {
             }
             return;
         }
-        iter = iter->next_in_order;
     }
 }
 
-MallocMetadata *mergeBlocks(MallocMetadata *meta1, MallocMetadata *meta2) {
-    if(meta1 == nullptr || meta2 == nullptr)
+MallocMetadata *mergeBlocks(MallocMetadata *first_metadata, MallocMetadata *second_metadata) {
+    if(first_metadata == nullptr || second_metadata == nullptr)
     {
         return nullptr;
     }
-    orderListRemove(meta1);
-    orderListRemove(meta2);
+    orderListRemove(first_metadata);
+    orderListRemove(second_metadata);
     num_of_free_blocks--;
     num_of_free_bytes += sizeof(MallocMetadata);
     num_of_alloc_blocks--;
     num_of_alloc_bytes += sizeof(MallocMetadata);
-    if (meta1 > meta2) {
-        MallocMetadata *tmp = meta1;
-        meta1 = meta2;
-        meta2 = tmp;
+    if (first_metadata > second_metadata) {
+        MallocMetadata *tmp = first_metadata;
+        first_metadata = second_metadata;
+        second_metadata = tmp;
     }
-    meta1->next = meta2->next;
-    if (meta2->next != nullptr) {
-        meta2->next->prev = meta1;
+    first_metadata->next = second_metadata->next;
+    if (second_metadata->next != nullptr) {
+        second_metadata->next->prev = first_metadata;
     }
-    meta1->order = meta1->order + 1;
-    orderListInsert(meta1);
-    return meta1;
+    first_metadata->order = first_metadata->order + 1;
+    orderListInsert(first_metadata);
+    return first_metadata;
 }
 
-MallocMetadata *splitBlocks(MallocMetadata *to_split) {
-    if(to_split == nullptr)
+MallocMetadata *splitBlocks(MallocMetadata *metadata_to_split) {
+    if(metadata_to_split == nullptr)
     {
         return nullptr;
     }
-    if (to_split->order == 0)
+    if (metadata_to_split->order == 0)
     {
-        return to_split;
+        return metadata_to_split;
     }
     num_of_free_blocks++;
     num_of_free_bytes -= sizeof(MallocMetadata);
     num_of_alloc_blocks++;
     num_of_alloc_bytes -= sizeof(MallocMetadata);
-    orderListRemove(to_split);
-    MallocMetadata *new_meta = (MallocMetadata *) (void *) ((char *) to_split + (int)(128 * pow(2,(to_split->order - 1))));
-    to_split->order = to_split->order - 1;
-    new_meta->order = to_split->order;
+    orderListRemove(metadata_to_split);
+    auto *new_meta = static_cast<MallocMetadata *>((void *) ((char *) metadata_to_split + (int) (128 * pow(2, (metadata_to_split->order - 1)))));
+    metadata_to_split->order = metadata_to_split->order - 1;
+    new_meta->order = metadata_to_split->order;
     new_meta->is_free = true;
-    to_split->is_free = true;
-    new_meta->next = to_split->next;
-    new_meta->prev = to_split;
-    to_split->next = new_meta;
+    metadata_to_split->is_free = true;
+    new_meta->next = metadata_to_split->next;
+    new_meta->prev = metadata_to_split;
+    metadata_to_split->next = new_meta;
     if (new_meta->next != nullptr)
     {
         new_meta->next->prev = new_meta;
     }
     orderListInsert(new_meta);
-    orderListInsert(to_split);
-    return to_split;
+    orderListInsert(metadata_to_split);
+    return metadata_to_split;
 }
 
-MallocMetadata *memorySplit(size_t size, MallocMetadata *meta = nullptr) {
+MallocMetadata *memorySplit(size_t size, MallocMetadata *metadata = nullptr) {
     MallocMetadata *iter = nullptr;
     int order = -1;
-    if (meta == nullptr) {
+    if (metadata == nullptr) {
         for (int i = 0; i <= MAX_ORDER; i++) {
             iter = orderBlocks[i];
             if (iter == nullptr || size > (size_t)((128 * pow(2,i)) - sizeof(MallocMetadata))) {
@@ -162,33 +154,33 @@ MallocMetadata *memorySplit(size_t size, MallocMetadata *meta = nullptr) {
     }
     else
     {
-        order = meta->order;
+        order = metadata->order;
         if(order == 0 || size > (size_t)((128 * pow(2,(order - 1))) - sizeof(MallocMetadata)))
         {
-            return meta;
+            return metadata;
         }
     }
     for (int j = order; j > 0; j--) {
-        iter = splitBlocks( iter);
+        iter = splitBlocks(iter);
         if (iter == nullptr) {
             return nullptr;
         }
-        else if ((size > (size_t)(128 * pow(2,(iter->order - 1)) - sizeof(MallocMetadata)) || iter->order == 0))
+        if ((size > (size_t)(128 * pow(2,(iter->order - 1)) - sizeof(MallocMetadata)) || iter->order == 0))
         {
             return iter;
         }
     }
-    return meta;
+    return metadata;
 }
 
-MallocMetadata *memoryMerge(MallocMetadata *meta) {
-    MallocMetadata *iter = meta;
+MallocMetadata *memoryMerge(MallocMetadata *metadata) {
+    MallocMetadata *iter = metadata;
     MallocMetadata *buddy;
-    for (int i = meta->order; i < MAX_ORDER; i++) {
+    for (int i = metadata->order; i < MAX_ORDER; i++) {
         buddy = (MallocMetadata *) ((void *) ((std::uintptr_t) iter ^ (int)(128 * pow(2,(iter->order)))));
-        if (meta->order != buddy->order || !buddy->is_free)
+        if (metadata->order != buddy->order || !buddy->is_free)
         {
-            return meta;
+            return metadata;
         }
         iter = mergeBlocks(iter, buddy);
     }
@@ -327,10 +319,10 @@ void *srealloc(void *oldp, size_t size) {
                     iter = mergeBlocks(iter, buddy);
                     num_of_free_bytes -= ((int)pow(2,iter->order-1) * 128);
                 }
-		iter->is_free=false;
-		orderListRemove(iter);
-		 memmove((void *) ((char *) iter + sizeof(MallocMetadata)), oldp, _sizeOfBlock(block) -sizeof(MallocMetadata));
-                return (void *) ((char *) iter + sizeof(MallocMetadata));
+                iter->is_free=false;
+                orderListRemove(iter);
+                memmove((char *) iter + sizeof(MallocMetadata), oldp, _sizeOfBlock(block) -sizeof(MallocMetadata));
+                return (char *) iter + sizeof(MallocMetadata);
             }
         }
     }
@@ -356,7 +348,6 @@ size_t _num_allocated_bytes() {
 
 size_t _num_meta_data_bytes() {
     return sizeof(MallocMetadata) * _num_allocated_blocks();
-
 }
 
 size_t _size_meta_data() {
