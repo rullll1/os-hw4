@@ -4,8 +4,6 @@
 #include <cstring>
 #include <stdio.h>
 
-
-
 void* smalloc1(size_t size) {
     if ((size == 0) or size > pow(10, 8))  {
         return nullptr;

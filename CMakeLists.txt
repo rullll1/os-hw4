@@ -1,6 +1,7 @@
-cmake_minimum_required(VERSION 3.10)
-project(os_hw4)
+cmake_minimum_required(VERSION 3.14)
 
-set(CMAKE_CXX_STANDARD 11)
+project(os-hw3)
 
-add_executable(os_hw4 main.cpp)
+set(SOURCE_DIR ${CMAKE_SOURCE_DIR})
+
+add_subdirectory(tests)
