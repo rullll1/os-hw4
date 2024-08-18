@@ -31,6 +31,7 @@ struct MemoryStats {
 MallocMetadata *blockList[11] = {nullptr};
 MallocMetadata *memoryBlocks = nullptr;
 MemoryStats memoryStats;
+
 bool orderBlocksInit = false;
 
 constexpr size_t size_of_block(int order) {
