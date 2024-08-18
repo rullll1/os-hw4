@@ -5,11 +5,13 @@
 #include <cmath>
 #include <sys/mman.h>
 
-#define MAX_ORDER 10
+constexpr int MAX_ORDER = 10;
+constexpr size_t INITIAL_BLOCK_SIZE = 32 * 131072;
+constexpr size_t MAX_ALLOCATION_SIZE = 100000000;
 
 struct MallocMetadata {
     bool is_free = true;
-    size_t mmap_alloc_size = 0;
+    size_t size = 0;
     int order = 0;
     MallocMetadata *next = nullptr;
     MallocMetadata *prev = nullptr;
@@ -17,17 +19,26 @@ struct MallocMetadata {
     MallocMetadata *prev_in_order = nullptr;
 };
 
-bool orderBlocksInit = false;
-size_t num_of_free_bytes = 0;
-size_t num_of_free_blocks = 0;
-size_t num_of_alloc_blocks = 0;
-size_t num_of_alloc_bytes = 0;
+constexpr size_t METADATA_SIZE = sizeof(MallocMetadata);
 
-MallocMetadata *orderBlocks[11] = {nullptr};
+struct MemoryStats {
+    size_t num_free_bytes = 0;
+    size_t num_free_blocks = 0;
+    size_t num_allocated_blocks = 0;
+    size_t num_allocated_bytes = 0;
+};
+
+MallocMetadata *blockList[11] = {nullptr};
 MallocMetadata *memoryBlocks = nullptr;
+MemoryStats memoryStats;
+bool orderBlocksInit = false;
 
-void orderListInsert(MallocMetadata *metadata) {
-    auto &head = orderBlocks[metadata->order];
+constexpr size_t size_of_block(int order) {
+    return 128 * (1 << order);
+}
+
+void list_insert(MallocMetadata *metadata) {
+    auto &head = blockList[metadata->order];
     if (head == nullptr) {
         metadata->next_in_order = nullptr;
         metadata->prev_in_order = nullptr;
@@ -56,8 +67,8 @@ void orderListInsert(MallocMetadata *metadata) {
     }
 }
 
-void orderListRemove(MallocMetadata *metadata) {
-    auto &head = orderBlocks[metadata->order];
+void list_remove(MallocMetadata *metadata) {
+    auto &head = blockList[metadata->order];
     for (MallocMetadata *iter = head; iter != nullptr; iter = iter->next_in_order) {
         if (iter == metadata) {
             if (iter->prev_in_order == nullptr) {
@@ -73,17 +84,17 @@ void orderListRemove(MallocMetadata *metadata) {
     }
 }
 
-MallocMetadata *mergeBlocks(MallocMetadata *first_metadata, MallocMetadata *second_metadata) {
+MallocMetadata *merge_blocks(MallocMetadata *first_metadata, MallocMetadata *second_metadata) {
     if(first_metadata == nullptr || second_metadata == nullptr)
     {
         return nullptr;
     }
-    orderListRemove(first_metadata);
-    orderListRemove(second_metadata);
-    num_of_free_blocks--;
-    num_of_free_bytes += sizeof(MallocMetadata);
-    num_of_alloc_blocks--;
-    num_of_alloc_bytes += sizeof(MallocMetadata);
+    list_remove(first_metadata);
+    list_remove(second_metadata);
+    memoryStats.num_free_blocks--;
+    memoryStats.num_free_bytes += sizeof(MallocMetadata);
+    memoryStats.num_allocated_blocks--;
+    memoryStats.num_allocated_bytes += sizeof(MallocMetadata);
     if (first_metadata > second_metadata) {
         MallocMetadata *tmp = first_metadata;
         first_metadata = second_metadata;
@@ -94,11 +105,11 @@ MallocMetadata *mergeBlocks(MallocMetadata *first_metadata, MallocMetadata *seco
         second_metadata->next->prev = first_metadata;
     }
     first_metadata->order = first_metadata->order + 1;
-    orderListInsert(first_metadata);
+    list_insert(first_metadata);
     return first_metadata;
 }
 
-MallocMetadata *splitBlocks(MallocMetadata *metadata_to_split) {
+MallocMetadata *split_blocks(MallocMetadata *metadata_to_split) {
     if(metadata_to_split == nullptr)
     {
         return nullptr;
@@ -107,11 +118,11 @@ MallocMetadata *splitBlocks(MallocMetadata *metadata_to_split) {
     {
         return metadata_to_split;
     }
-    num_of_free_blocks++;
-    num_of_free_bytes -= sizeof(MallocMetadata);
-    num_of_alloc_blocks++;
-    num_of_alloc_bytes -= sizeof(MallocMetadata);
-    orderListRemove(metadata_to_split);
+    memoryStats.num_free_blocks++;
+    memoryStats.num_free_bytes -= sizeof(MallocMetadata);
+    memoryStats.num_allocated_blocks++;
+    memoryStats.num_allocated_bytes -= sizeof(MallocMetadata);
+    list_remove(metadata_to_split);
     auto *new_meta = static_cast<MallocMetadata *>((void *) ((char *) metadata_to_split + (int) (128 * pow(2, (metadata_to_split->order - 1)))));
     metadata_to_split->order = metadata_to_split->order - 1;
     new_meta->order = metadata_to_split->order;
@@ -124,21 +135,18 @@ MallocMetadata *splitBlocks(MallocMetadata *metadata_to_split) {
     {
         new_meta->next->prev = new_meta;
     }
-    orderListInsert(new_meta);
-    orderListInsert(metadata_to_split);
+    list_insert(new_meta);
+    list_insert(metadata_to_split);
     return metadata_to_split;
 }
 
-MallocMetadata *memorySplit(size_t size, MallocMetadata *metadata = nullptr) {
+MallocMetadata *split_memory(size_t size, MallocMetadata *metadata = nullptr) {
     MallocMetadata *iter = nullptr;
     int order = -1;
     if (metadata == nullptr) {
         for (int i = 0; i <= MAX_ORDER; i++) {
-            iter = orderBlocks[i];
-            if (iter == nullptr || size > (size_t)((128 * pow(2,i)) - sizeof(MallocMetadata))) {
-                continue;
-            }
-            else{
+            iter = blockList[i];
+            if (iter != nullptr && size <= (size_t)(128 * pow(2,i) - sizeof(MallocMetadata))) {
                 order = iter->order;
                 if(order == 0 || size > (size_t)((128 * pow(2,(order - 1))) - sizeof(MallocMetadata)))
                 {
@@ -161,7 +169,7 @@ MallocMetadata *memorySplit(size_t size, MallocMetadata *metadata = nullptr) {
         }
     }
     for (int j = order; j > 0; j--) {
-        iter = splitBlocks(iter);
+        iter = split_blocks(iter);
         if (iter == nullptr) {
             return nullptr;
         }
@@ -173,7 +181,7 @@ MallocMetadata *memorySplit(size_t size, MallocMetadata *metadata = nullptr) {
     return metadata;
 }
 
-MallocMetadata *memoryMerge(MallocMetadata *metadata) {
+MallocMetadata *merge_memory(MallocMetadata *metadata) {
     MallocMetadata *iter = metadata;
     MallocMetadata *buddy;
     for (int i = metadata->order; i < MAX_ORDER; i++) {
@@ -182,30 +190,29 @@ MallocMetadata *memoryMerge(MallocMetadata *metadata) {
         {
             return metadata;
         }
-        iter = mergeBlocks(iter, buddy);
+        iter = merge_blocks(iter, buddy);
     }
     return iter;
 }
 
-size_t _sizeOfBlock(MallocMetadata *block) {
-    return 128 * (int)pow(2,block->order);
-}
 
-void initializeOrderBlocks() {
+
+void init_blocks() {
     void *block_ptr = sbrk(0);
-    size_t align = (32 * 131072) - (((uintptr_t) block_ptr) % (32 * 131072));
-    if (sbrk((32 * 131072) + align) == (void *) -1) {
+    size_t align = INITIAL_BLOCK_SIZE - (reinterpret_cast<uintptr_t>(block_ptr) % INITIAL_BLOCK_SIZE);
+    if (sbrk(INITIAL_BLOCK_SIZE + align) == (void *) -1) {
         return;
     }
-    block_ptr = (void *) ((char *) block_ptr + align);
-    orderBlocks[MAX_ORDER] = static_cast<MallocMetadata *>(block_ptr);
-    MallocMetadata *iter = orderBlocks[MAX_ORDER];
+    block_ptr = reinterpret_cast<void *>(reinterpret_cast<char *>(block_ptr) + align);
+    blockList[MAX_ORDER] = static_cast<MallocMetadata *>(block_ptr);
+    MallocMetadata *iter = blockList[MAX_ORDER];
     iter->is_free = true;
     iter->order = MAX_ORDER;
     iter->prev_in_order = nullptr;
     iter->prev = nullptr;
-    for (int i = 0; i < 31; i++) {
-        iter->next = reinterpret_cast<MallocMetadata *>((char *) iter + 131072);
+    constexpr size_t num_blocks = INITIAL_BLOCK_SIZE / size_of_block(MAX_ORDER);
+    for (size_t i = 0; i < num_blocks - 1; i++) {
+        iter->next = reinterpret_cast<MallocMetadata *>(reinterpret_cast<char *>(iter) + size_of_block(MAX_ORDER));
         iter->next->prev = iter;
         iter->next_in_order = iter->next;
         iter->next_in_order->prev_in_order = iter;
@@ -215,50 +222,49 @@ void initializeOrderBlocks() {
     }
     iter->next_in_order = nullptr;
     iter->next = nullptr;
-    num_of_alloc_blocks += 32;
-    num_of_free_blocks += 32;
-    num_of_alloc_bytes += 32 * (131072 - sizeof(MallocMetadata));
-    num_of_free_bytes += 32 * (131072 - sizeof(MallocMetadata));
+    memoryStats.num_allocated_blocks += num_blocks;
+    memoryStats.num_free_blocks += num_blocks;
+    memoryStats.num_allocated_bytes += num_blocks * (size_of_block(MAX_ORDER) - sizeof(MallocMetadata));
+    memoryStats.num_free_bytes += num_blocks * (size_of_block(MAX_ORDER) - sizeof(MallocMetadata));
     orderBlocksInit = true;
 }
 
-void* allocateLargeBlock(size_t size) {
-    void *ptr = mmap(NULL, size + sizeof(MallocMetadata), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+void* allocate_large_block(size_t size) {
+    void *ptr = mmap(nullptr, size + sizeof(MallocMetadata), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (ptr == (void *) -1) {
         return nullptr;
     }
     auto meta = (MallocMetadata *) ptr;
-    meta->mmap_alloc_size = size;
+    meta->size = size;
     meta->is_free = false;
-    num_of_alloc_bytes += size;
-    num_of_alloc_blocks++;
+    memoryStats.num_allocated_bytes += size;
+    memoryStats.num_allocated_blocks++;
     return (void *) ((char *) meta + sizeof(MallocMetadata));
 }
 
-void* allocateSmallBlock(size_t size) {
-    MallocMetadata *block = memorySplit(size);
+void* allocate_small_block(size_t size) {
+    MallocMetadata *block = split_memory(size);
     if (block == nullptr) {
         return nullptr;
     }
     block->is_free = false;
-    orderListRemove(block);
-    num_of_free_blocks--;
-    num_of_free_bytes -= ((int)pow(2,block->order) * 128 - sizeof(MallocMetadata));
+    list_remove(block);
+    memoryStats.num_free_blocks--;
+    memoryStats.num_free_bytes -= ((int)pow(2,block->order) * 128 - sizeof(MallocMetadata));
     return (void *) ((char *) block + sizeof(MallocMetadata));
 }
 
 void *smalloc(size_t size) {
     if (!orderBlocksInit) {
-        initializeOrderBlocks();
+        init_blocks();
     }
-    if (size == 0 || size > 100000000) {
+    if (size == 0 || size > MAX_ALLOCATION_SIZE) {
         return nullptr;
     }
-    if (size >= 131072) {
-        return allocateLargeBlock(size);
+    if (size >= size_of_block(MAX_ORDER)) {
+        return allocate_large_block(size);
     }
-    return allocateSmallBlock(size);
-
+    return allocate_small_block(size);
 }
 
 void *scalloc(size_t num, size_t size) {
@@ -280,20 +286,20 @@ void sfree(void *p) {
     {
         return;
     }
-    if (meta->mmap_alloc_size > 0) {
-        num_of_alloc_bytes -= meta->mmap_alloc_size;
-        num_of_alloc_blocks--;
-        munmap(meta, _sizeOfBlock(meta) + sizeof(MallocMetadata));
+    if (meta->size > 0) {
+        memoryStats.num_allocated_bytes -= meta->size;
+        memoryStats.num_allocated_blocks--;
+        munmap(meta, size_of_block(meta->order) + sizeof(MallocMetadata));
     }
     else {
         meta->is_free = true;
-        num_of_free_blocks++;
-        num_of_free_bytes += (_sizeOfBlock(meta) - sizeof(MallocMetadata));
-        orderListInsert(meta);
-        meta = memoryMerge(meta);
+        memoryStats.num_free_blocks++;
+        memoryStats.num_free_bytes += (size_of_block(meta->order) - sizeof(MallocMetadata));
+        list_insert(meta);
+        meta = merge_memory(meta);
     }
 }
-void* allocateNewBlock(size_t size, void* oldp, size_t oldSize) {
+void* allocate_new_block(size_t size, void* oldp, size_t oldSize) {
     void* newPtr = smalloc(size);
     if (newPtr == nullptr) {
         return nullptr; // Allocation failed
@@ -302,13 +308,13 @@ void* allocateNewBlock(size_t size, void* oldp, size_t oldSize) {
     sfree(oldp);
     return newPtr;
 }
-void* handleLargeAllocation(MallocMetadata* block, void* oldp, size_t size) {
-    if (block->mmap_alloc_size == size) {
+void* handle_large_allocation(MallocMetadata* block, void* oldp, size_t size) {
+    if (block->size == size) {
         return oldp;
     }
-    return allocateNewBlock(size, oldp, block->mmap_alloc_size);
+    return allocate_new_block(size, oldp, block->size);
 }
-MallocMetadata* mergeFreeBlocks(MallocMetadata* block, size_t size) {
+MallocMetadata* merge_free_blocks(MallocMetadata* block, size_t size) {
     MallocMetadata* iter = block;
     for (int i = iter->order; i < MAX_ORDER; i++) {
         auto* buddy = static_cast<MallocMetadata*>((void*)((std::uintptr_t)iter ^ (int)(128 * pow(2, i))));
@@ -316,22 +322,22 @@ MallocMetadata* mergeFreeBlocks(MallocMetadata* block, size_t size) {
             break;
         }
         if (size <= 128 * (int)pow(2, (i + 1)) - sizeof(MallocMetadata)) {
-            orderListInsert(block);
+            list_insert(block);
             block->is_free = true;
             for (int j = iter->order; j <= i; j++) {
                 buddy = (MallocMetadata*)((void*)((std::uintptr_t)iter ^ (int)(128 * pow(2, j))));
-                iter = mergeBlocks(iter, buddy);
-                num_of_free_bytes -= ((int)pow(2, iter->order - 1) * 128);
+                iter = merge_blocks(iter, buddy);
+                memoryStats.num_free_bytes -= ((int)pow(2, iter->order - 1) * 128);
             }
             iter->is_free = false;
-            orderListRemove(iter);
+            list_remove(iter);
             return iter;
         }
     }
     return nullptr;
 }
 void* srealloc(void* oldp, size_t size) {
-    if (size == 0 || size > 100000000) {
+    if (size == 0 || size > MAX_ALLOCATION_SIZE) {
         return nullptr;
     }
     if (oldp == nullptr) {
@@ -340,43 +346,43 @@ void* srealloc(void* oldp, size_t size) {
 
     auto* block = (MallocMetadata*)((char*)oldp - sizeof(MallocMetadata));
     if (size >= 131072) {
-        return handleLargeAllocation(block, oldp, size);
+        return handle_large_allocation(block, oldp, size);
     }
 
-    if (size <= _sizeOfBlock(block)) {
+    if (size <= size_of_block(block->order)) {
         return oldp;
     } else {
-        MallocMetadata* newBlock = mergeFreeBlocks(block, size);
+        MallocMetadata* newBlock = merge_free_blocks(block, size);
         if (newBlock != nullptr) {
-            memmove((char*)newBlock + sizeof(MallocMetadata), oldp, _sizeOfBlock(block) - sizeof(MallocMetadata));
+            memmove((char*)newBlock + sizeof(MallocMetadata), oldp, size_of_block(block->order) - sizeof(MallocMetadata));
             return (char*)newBlock + sizeof(MallocMetadata);
         }
     }
 
-    return allocateNewBlock(size, oldp, _sizeOfBlock(block) - sizeof(MallocMetadata));
+    return allocate_new_block(size, oldp, size_of_block(block->order) - sizeof(MallocMetadata));
 }
 
 
 size_t _num_free_blocks() {
-    return num_of_free_blocks;
+    return memoryStats.num_free_blocks;
 }
 
 size_t _num_free_bytes() {
-    return num_of_free_bytes;
+    return memoryStats.num_free_bytes;
 }
 
 size_t _num_allocated_blocks() {
-    return num_of_alloc_blocks;
+    return memoryStats.num_allocated_blocks;
 }
 
 size_t _num_allocated_bytes() {
-    return num_of_alloc_bytes;
+    return memoryStats.num_allocated_bytes;
 }
 
 size_t _num_meta_data_bytes() {
-    return sizeof(MallocMetadata) * _num_allocated_blocks();
+    return METADATA_SIZE * _num_allocated_blocks();
 }
 
 size_t _size_meta_data() {
-    return sizeof(MallocMetadata);
+    return METADATA_SIZE;
 }
