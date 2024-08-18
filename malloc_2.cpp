@@ -1,172 +1,185 @@
-#include <string.h>
 #include <unistd.h>
+#include <cstring>
 
-typedef struct MallocMetaData {
+constexpr size_t MAX_ALLOCATION_SIZE = 100000000;
+
+struct MallocMetadata {
     size_t size;
-    bool is_free;
-    MallocMetaData* next;
-    MallocMetaData* prev;
-} MetaDataStruct;
-
-size_t _size_meta_data() {
-    return sizeof(MallocMetaData);
-}
-
-class BlocksList {
-private:
-    MetaDataStruct* first_block;
-    size_t free_blocks;
-    size_t free_bytes;
-    size_t allocated_blocks;
-    size_t allocated_bytes;
-
-public:
-    BlocksList() : first_block(nullptr), free_blocks(0), free_bytes(0), allocated_blocks(0), allocated_bytes(0) {}
-    ~BlocksList() = default;
-
-    // inserts new block to the end of the list
-    void insert_block(MetaDataStruct *block) {
-        if (this->first_block == nullptr) {
-            block->next = nullptr;
-            block->prev = nullptr;
-            block->is_free = false;
-            this->first_block = block;
-        }
-        else {
-            MetaDataStruct *tmp = this->first_block;
-            while (tmp->next != nullptr) {
-                tmp = tmp->next;
-            }
-            block->next = nullptr;
-            block->prev = tmp;
-            block->is_free = false;
-            tmp->next = block;
-        }
-        this->allocated_blocks++;
-        this->allocated_bytes += block->size - _size_meta_data();
-    }
-
-    // updates some free block to be not free anymore. we assume here the new size is smaller than the block
-    void set_allocated_block(MetaDataStruct *block) {
-        size_t actual_size = block->size - sizeof(MetaDataStruct);
-        if (!block->is_free) {
-            return;
-        }
-        block->is_free = false;
-        this->free_blocks--;
-        this->free_bytes -= actual_size;
-        this->allocated_blocks++;
-        this->allocated_bytes += actual_size;
-    }
-
-    void set_free_block(MetaDataStruct* block) {
-        size_t actual_size = block->size - sizeof(MetaDataStruct);
-        if (!block->is_free) {
-            block->is_free = true;
-            this->free_blocks++;
-            this->free_bytes += actual_size;
-            this->allocated_blocks--;
-            this->allocated_bytes -= actual_size;
-        }
-    }
-
-    MetaDataStruct* get_first() {
-        return this->first_block;
-    }
-
-    size_t get_free_blocks() {
-        return this->free_blocks;
-    }
-    size_t get_free_bytes() {
-        return this->free_bytes;
-    }
-    size_t get_allocated_blocks() {
-        return this->allocated_blocks;
-    }
-    size_t get_allocated_bytes() {
-        return this->allocated_bytes;
-    }
+    bool is_free = false;
+    MallocMetadata* next = nullptr;
+    MallocMetadata* prev = nullptr;
 };
 
-static BlocksList blocks_list = BlocksList();
+constexpr size_t METADATA_SIZE = sizeof(MallocMetadata);
 
-void* smalloc(size_t size) {
-    if (size <= 0) {
+MallocMetadata* memoryBlocks = nullptr;
+
+MallocMetadata* find_first_free(size_t size)
+{
+    if(memoryBlocks == nullptr || size <= 0)
+    {
         return nullptr;
     }
-    if (size > 100000000) {
-        return nullptr;
-    }
-
-    MetaDataStruct* tmp = blocks_list.get_first();
-    while (tmp != nullptr) {
-        if (tmp->is_free && tmp->size - _size_meta_data() >= size) {
-            blocks_list.set_allocated_block(tmp);
-            return tmp + 1;
+    MallocMetadata* iter = memoryBlocks;
+    while(iter->next!= nullptr)
+    {
+        if(iter->is_free && size <= iter->size)
+        {
+            return iter;
         }
-        tmp = tmp->next;
+        iter = iter->next;
     }
-
-    void * ret = sbrk(size + sizeof(MetaDataStruct));
-    if (ret == (void*)-1){
-        return nullptr;
-    }
-    MallocMetaData* s = (MallocMetaData*)ret;
-    s->size = size + _size_meta_data();
-    blocks_list.insert_block(s);
-    return s + 1;
+    return iter;
 }
 
-void* scalloc(size_t num, size_t size) {
-    if (num <= 0 || size <= 0 || size > 100000000){
+void* smalloc(size_t size)
+{
+    if(size == 0 || size > MAX_ALLOCATION_SIZE)
+    {
         return nullptr;
     }
-    void* p = smalloc(num*size);
-    if (p == nullptr) {
-        return nullptr;
+    MallocMetadata* block = find_first_free(size);
+    //if empty or last and not free
+    if(block == nullptr || (block->next == nullptr && !block->is_free))
+    {
+        void* block_ptr = sbrk(0);
+        if(sbrk(sizeof(MallocMetadata) + size) == (void*) - 1)
+        {
+            return nullptr;
+        }
+        MallocMetadata* new_block = (MallocMetadata*)block_ptr;
+        new_block->size = size;
+        new_block->is_free = false;
+        //empty
+        if(block == nullptr)
+        {
+            memoryBlocks = new_block;
+        }
+        //last
+        else
+        {
+            block->next = new_block;
+            new_block->prev = block;
+        }
+        return (void*)((char*)(new_block) + sizeof(MallocMetadata));
     }
-    memset(p, 0, num*size);
-    return p;
+    //some free block in the list, removing else because of return
+    block->is_free = false;
+    return (void*)((char*)(block) + sizeof(MallocMetadata));
 }
 
-void sfree(void* p) {
-    if (p == nullptr) {
+void* scalloc(size_t num, size_t size)
+{
+    int real_size = num * size;
+    void* block_ptr = smalloc(real_size);
+    if(block_ptr != nullptr)
+    {
+        memset(block_ptr, 0, real_size);
+    }
+    return block_ptr;
+}
+
+void sfree(void *p)
+{
+    if(p == nullptr)
+    {
         return;
     }
-    MetaDataStruct* block = ((MetaDataStruct*)p) - 1 ;
-    blocks_list.set_free_block(block);
+    MallocMetadata* block =(MallocMetadata*)((char*)p - sizeof (MallocMetadata));
+    if(block->is_free)
+    {
+        return;
+    }
+    block->is_free = true;
 }
 
-void* srealloc(void* oldp, size_t size) {
-    if (oldp == nullptr) {
-        return smalloc(size);
-    }
-    MetaDataStruct* old = ((MetaDataStruct*)oldp) - 1 ;
-    if (size <= 0 || size > 100000000){
+void* srealloc(void* oldp, size_t size)
+{
+    if(size == 0 || size > MAX_ALLOCATION_SIZE)
+    {
         return nullptr;
     }
-    size_t actual_old_size = old->size - sizeof(MetaDataStruct);
-    if (actual_old_size >= size) {
+    if(oldp == nullptr)
+    {
+        return smalloc(size);
+    }
+    MallocMetadata* block =(MallocMetadata*)((char*)oldp - sizeof (MallocMetadata));
+    if(size <= block->size){
         return oldp;
     }
-    void * res = smalloc(size);
-    memmove(res, oldp, actual_old_size);
-    sfree(oldp);
-    return res;
+    void* block_ptr = smalloc(size);
+    if(block_ptr != nullptr)
+    {
+        memmove(block_ptr, oldp, block->size);
+        sfree((void*)((char*)(block) + sizeof (MallocMetadata)));
+    }
+    return block_ptr;
 }
 
 size_t _num_free_blocks() {
-    return blocks_list.get_free_blocks();
+    size_t size = 0;
+    if(memoryBlocks == nullptr)
+    {
+        return size;
+    }
+    for(MallocMetadata* iter = memoryBlocks; iter != nullptr; iter = iter->next)
+    {
+        if(iter->is_free){
+            size++;
+        }
+    }
+    return size;
 }
-size_t _num_free_bytes() {
-    return blocks_list.get_free_bytes();
+
+size_t _num_free_bytes(){
+    size_t size = 0;
+    if(memoryBlocks == nullptr)
+    {
+        return size;
+    }
+
+    for(MallocMetadata* iter = memoryBlocks; iter != nullptr; iter = iter->next)
+    {
+        if(iter->is_free)
+        {
+            size += iter->size;
+        }
+    }
+    return size;
 }
-size_t _num_allocated_blocks() {
-    return blocks_list.get_allocated_blocks() + blocks_list.get_free_blocks();
+
+size_t _num_allocated_blocks(){
+    size_t size = 0;
+    if(memoryBlocks == nullptr)
+    {
+        return size;
+    }
+
+    for(MallocMetadata* iter = memoryBlocks; iter != nullptr; iter = iter->next)
+    {
+        size++;
+    }
+    return size;
 }
-size_t _num_allocated_bytes() {
-    return blocks_list.get_free_bytes() + blocks_list.get_allocated_bytes();
+
+size_t _num_allocated_bytes(){
+    size_t size = 0;
+    if(memoryBlocks == nullptr)
+    {
+        return size;
+    }
+
+    for(MallocMetadata* iter = memoryBlocks; iter != nullptr; iter = iter->next)
+    {
+        size+= iter->size;
+    }
+    return size;
 }
-size_t _num_meta_data_bytes() {
-    return blocks_list.get_free_blocks() * _size_meta_data() + blocks_list.get_allocated_blocks() * _size_meta_data();
+
+size_t _num_meta_data_bytes(){
+    return METADATA_SIZE * _num_allocated_blocks();
+}
+
+size_t _size_meta_data(){
+    return METADATA_SIZE;
 }
