@@ -12,15 +12,15 @@ struct MallocMetadata {
 
 constexpr size_t METADATA_SIZE = sizeof(MallocMetadata);
 
-MallocMetadata* memoryBlocks = nullptr;
+MallocMetadata* memory_blocks = nullptr;
 
 MallocMetadata* allocate(const size_t size)
 {
-    if(memoryBlocks == nullptr || size <= 0)
+    if(memory_blocks == nullptr || size <= 0)
     {
         return nullptr;
     }
-    MallocMetadata* curr = memoryBlocks;
+    MallocMetadata* curr = memory_blocks;
     while(curr->next != nullptr)
     {
         if(curr->is_free && size <= curr->size)
@@ -48,7 +48,7 @@ void* smalloc(size_t size) {
         new_block->size = size;
 
         if (block == nullptr) {
-            memoryBlocks = new_block;
+            memory_blocks = new_block;
         } else {
             block->next = new_block;
             new_block->prev = block;
@@ -105,7 +105,7 @@ void* srealloc(void* oldp, size_t size) {
 
 size_t _num_free_blocks() {
     size_t count = 0;
-    for (const MallocMetadata* iter = memoryBlocks; iter != nullptr; iter = iter->next) {
+    for (const MallocMetadata* iter = memory_blocks; iter != nullptr; iter = iter->next) {
         if (iter->is_free) {
             count++;
         }
@@ -115,7 +115,7 @@ size_t _num_free_blocks() {
 
 size_t _num_free_bytes() {
     size_t total_size = 0;
-    for (const MallocMetadata* iter = memoryBlocks; iter != nullptr; iter = iter->next) {
+    for (const MallocMetadata* iter = memory_blocks; iter != nullptr; iter = iter->next) {
         if (iter->is_free) {
             total_size += iter->size;
         }
@@ -125,7 +125,7 @@ size_t _num_free_bytes() {
 
 size_t _num_allocated_blocks() {
     size_t count = 0;
-    for (const MallocMetadata* iter = memoryBlocks; iter != nullptr; iter = iter->next) {
+    for (const MallocMetadata* iter = memory_blocks; iter != nullptr; iter = iter->next) {
         count++;
     }
     return count;
@@ -133,7 +133,7 @@ size_t _num_allocated_blocks() {
 
 size_t _num_allocated_bytes() {
     size_t total_size = 0;
-    for (const MallocMetadata* iter = memoryBlocks; iter != nullptr; iter = iter->next) {
+    for (const MallocMetadata* iter = memory_blocks; iter != nullptr; iter = iter->next) {
         total_size += iter->size;
     }
     return total_size;
