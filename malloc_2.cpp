@@ -14,22 +14,22 @@ constexpr size_t METADATA_SIZE = sizeof(MallocMetadata);
 
 MallocMetadata* memoryBlocks = nullptr;
 
-MallocMetadata* find_free(const size_t size)
+MallocMetadata* allocate(const size_t size)
 {
     if(memoryBlocks == nullptr || size <= 0)
     {
         return nullptr;
     }
-    MallocMetadata* iter = memoryBlocks;
-    while(iter->next != nullptr)
+    MallocMetadata* curr = memoryBlocks;
+    while(curr->next != nullptr)
     {
-        if(iter->is_free && size <= iter->size)
+        if(curr->is_free && size <= curr->size)
         {
-            return iter;
+            return curr;
         }
-        iter = iter->next;
+        curr = curr->next;
     }
-    return iter;
+    return curr;
 }
 
 void* smalloc(size_t size) {
@@ -37,8 +37,7 @@ void* smalloc(size_t size) {
         return nullptr;
     }
 
-    MallocMetadata* block = find_free(size);
-
+    MallocMetadata* block = allocate(size);
     if (block == nullptr || (block->next == nullptr && !block->is_free)) {
         void* block_ptr = sbrk(0);
         if (sbrk(METADATA_SIZE + size) == reinterpret_cast<void *>(-1)) {
@@ -63,10 +62,10 @@ void* smalloc(size_t size) {
 }
 
 void* scalloc(size_t num, size_t size) {
-    size_t real_size = num * size;
-    void* block_ptr = smalloc(real_size);
+    size_t mem_size = num * size;
+    void* block_ptr = smalloc(mem_size);
     if (block_ptr != nullptr) {
-        std::memset(block_ptr, 0, real_size);
+        std::memset(block_ptr, 0, mem_size);
     }
     return block_ptr;
 }
@@ -95,13 +94,13 @@ void* srealloc(void* oldp, size_t size) {
         return oldp;
     }
 
-    void* new_block_ptr = smalloc(size);
-    if (new_block_ptr != nullptr) {
-        std::memmove(new_block_ptr, oldp, block->size);
+    void* new_block = smalloc(size);
+    if (new_block != nullptr) {
+        std::memmove(new_block, oldp, block->size);
         sfree(oldp);
     }
 
-    return new_block_ptr;
+    return new_block;
 }
 
 size_t _num_free_blocks() {
