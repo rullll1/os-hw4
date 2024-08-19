@@ -44,8 +44,9 @@ void* smalloc(size_t size) {
             return nullptr;
         }
 
-        auto* new_block = static_cast<MallocMetadata *>(block_ptr);
+        auto* new_block = static_cast<MallocMetadata*>(block_ptr);
         new_block->size = size;
+        new_block->is_free = false;
 
         if (block == nullptr) {
             memory_blocks = new_block;
@@ -75,7 +76,7 @@ void sfree(void* p) {
         return;
     }
 
-    auto* block = reinterpret_cast<MallocMetadata *>(static_cast<char *>(p) - METADATA_SIZE);
+    auto* block = reinterpret_cast<MallocMetadata*>(reinterpret_cast<char*>(p) - METADATA_SIZE);
     block->is_free = true;
 }
 
@@ -88,7 +89,7 @@ void* srealloc(void* oldp, size_t size) {
         return smalloc(size);
     }
 
-    auto* block = reinterpret_cast<MallocMetadata *>(static_cast<char *>(oldp) - METADATA_SIZE);
+    auto* block = reinterpret_cast<MallocMetadata*>(reinterpret_cast<char*>(oldp) - METADATA_SIZE);
 
     if (size <= block->size) {
         return oldp;
