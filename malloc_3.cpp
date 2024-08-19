@@ -85,31 +85,6 @@ void list_remove(MallocMetadata *metadata) {
     }
 }
 
-MallocMetadata *merge_blocks(MallocMetadata *first_metadata, MallocMetadata *second_metadata) {
-    if(first_metadata == nullptr || second_metadata == nullptr)
-    {
-        return nullptr;
-    }
-    list_remove(first_metadata);
-    list_remove(second_metadata);
-    memoryStats.num_free_blocks--;
-    memoryStats.num_free_bytes += METADATA_SIZE;
-    memoryStats.num_allocated_blocks--;
-    memoryStats.num_allocated_bytes += METADATA_SIZE;
-    if (first_metadata > second_metadata) {
-        MallocMetadata *tmp = first_metadata;
-        first_metadata = second_metadata;
-        second_metadata = tmp;
-    }
-    first_metadata->next = second_metadata->next;
-    if (second_metadata->next != nullptr) {
-        second_metadata->next->prev = first_metadata;
-    }
-    first_metadata->order = first_metadata->order + 1;
-    list_insert(first_metadata);
-    return first_metadata;
-}
-
 MallocMetadata *split_blocks(MallocMetadata *metadata_to_split) {
     if(metadata_to_split == nullptr)
     {
@@ -182,22 +157,6 @@ MallocMetadata *split_memory(size_t size, MallocMetadata *metadata = nullptr) {
     return metadata;
 }
 
-MallocMetadata *merge_memory(MallocMetadata *metadata) {
-    MallocMetadata *iter = metadata;
-    MallocMetadata *buddy;
-    for (int i = metadata->order; i < MAX_ORDER; i++) {
-        buddy = (MallocMetadata *) ((void *) ((std::uintptr_t) iter ^ (int)(128 * pow(2,(iter->order)))));
-        if (metadata->order != buddy->order || !buddy->is_free)
-        {
-            return metadata;
-        }
-        iter = merge_blocks(iter, buddy);
-    }
-    return iter;
-}
-
-
-
 void init_blocks() {
     void *block_ptr = sbrk(0);
     size_t align = INITIAL_BLOCK_SIZE - (reinterpret_cast<uintptr_t>(block_ptr) % INITIAL_BLOCK_SIZE);
@@ -253,6 +212,45 @@ void* allocate_small_block(size_t size) {
     memoryStats.num_free_blocks--;
     memoryStats.num_free_bytes -= ((int)pow(2,block->order) * 128 - METADATA_SIZE);
     return (void *) ((char *) block + METADATA_SIZE);
+}
+
+
+MallocMetadata *merge_blocks(MallocMetadata *first_metadata, MallocMetadata *second_metadata) {
+    if(first_metadata == nullptr || second_metadata == nullptr)
+    {
+        return nullptr;
+    }
+    list_remove(first_metadata);
+    list_remove(second_metadata);
+    memoryStats.num_free_blocks--;
+    memoryStats.num_free_bytes += METADATA_SIZE;
+    memoryStats.num_allocated_blocks--;
+    memoryStats.num_allocated_bytes += METADATA_SIZE;
+    if (first_metadata > second_metadata) {
+        MallocMetadata *tmp = first_metadata;
+        first_metadata = second_metadata;
+        second_metadata = tmp;
+    }
+    first_metadata->next = second_metadata->next;
+    if (second_metadata->next != nullptr) {
+        second_metadata->next->prev = first_metadata;
+    }
+    first_metadata->order = first_metadata->order + 1;
+    list_insert(first_metadata);
+    return first_metadata;
+}
+MallocMetadata *merge_memory(MallocMetadata *metadata) {
+    MallocMetadata *iter = metadata;
+    MallocMetadata *buddy;
+    for (int i = metadata->order; i < MAX_ORDER; i++) {
+        buddy = (MallocMetadata *) ((void *) ((std::uintptr_t) iter ^ (int)(128 * pow(2,(iter->order)))));
+        if (metadata->order != buddy->order || !buddy->is_free)
+        {
+            return metadata;
+        }
+        iter = merge_blocks(iter, buddy);
+    }
+    return iter;
 }
 
 void *smalloc(size_t size) {
